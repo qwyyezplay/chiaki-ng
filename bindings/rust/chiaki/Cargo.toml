@@ -1,0 +1,13 @@
+[package]
+name = "chiaki"
+version = "0.1.0"
+edition = "2024"
+description = "Safe Rust bindings for chiaki-ng"
+
+[dependencies]
+chiaki-sys = { path = "../chiaki-sys" }
+thiserror = "2"
+bitflags = "2"
+
+[dev-dependencies]
+ctrlc = "3"

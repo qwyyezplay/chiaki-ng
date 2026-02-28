@@ -1,0 +1,13 @@
+[package]
+name = "chiaki-sys"
+version = "1.9.9"
+edition = "2024"
+links = "chiaki"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cmake = "0.1"
+bindgen = "0.72"
+pkg-config = "0.3"

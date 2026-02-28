@@ -1,0 +1,3 @@
+[workspace]
+members = ["chiaki","chiaki-sys"]
+resolver = "2"
