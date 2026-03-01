@@ -11,6 +11,7 @@ use crate::error::{ffi_result, Result};
 use crate::controller::ControllerState;
 use crate::log::Log;
 use crate::regist::RegisteredHost;
+use crate::stats::StreamStats;
 use crate::types::{Codec, DualSenseEffectIntensity, QuitReason};
 
 // ── Supporting types ──────────────────────────────────────────────────────────
@@ -252,6 +253,15 @@ pub trait AudioSink: Send + 'static {
     fn on_header(&mut self, header: AudioHeader);
     /// Called for each Opus-encoded audio frame.
     fn on_frame(&mut self, opus_data: &[u8]);
+}
+
+impl AudioSink for Box<dyn AudioSink> {
+    fn on_header(&mut self, header: AudioHeader) {
+        (**self).on_header(header);
+    }
+    fn on_frame(&mut self, opus_data: &[u8]) {
+        (**self).on_frame(opus_data);
+    }
 }
 
 // ── ConnectInfo ───────────────────────────────────────────────────────────────
@@ -732,6 +742,40 @@ impl Session {
                 muted,
             )
         })
+    }
+
+    /// Signal the console that a microphone channel is connected.
+    ///
+    /// Call this once before pushing microphone audio data.
+    pub fn connect_microphone(&self) -> Result<()> {
+        ffi_result(unsafe {
+            sys::chiaki_session_connect_microphone(
+                &mut (*self.inner.as_ptr()).raw,
+            )
+        })
+    }
+
+    /// Read current network statistics from the active stream connection.
+    ///
+    /// The values are updated by the C library's congestion-control thread and
+    /// are eventually consistent.
+    pub fn stream_stats(&self) -> StreamStats {
+        let inner = unsafe { &*self.inner.as_ptr() };
+        StreamStats {
+            measured_bitrate: inner.raw.stream_connection.measured_bitrate,
+            packet_loss: inner.raw.stream_connection.congestion_control.packet_loss,
+        }
+    }
+
+    /// Get a raw pointer to the underlying `chiaki_session_t`.
+    ///
+    /// # Safety
+    ///
+    /// The returned pointer is valid for the lifetime of this `Session`.
+    /// The caller must not call `chiaki_session_fini` or otherwise invalidate
+    /// the session through this pointer.
+    pub(crate) fn raw_session_ptr(&self) -> *mut sys::chiaki_session_t {
+        &mut unsafe { &mut *self.inner.as_ptr() }.raw
     }
 
     // ── Internal cleanup ─────────────────────────────────────────────────────

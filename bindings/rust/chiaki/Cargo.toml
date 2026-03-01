@@ -14,8 +14,13 @@ sdl2 = { version = "0.38", features = ["hidapi"], optional = true }
 sdl-controller = ["dep:sdl2"]
 
 [dev-dependencies]
+chiaki-sys = { path = "../chiaki-sys" }
 ctrlc = "3"
 
 [[example]]
 name = "controllermanager"
+required-features = ["sdl-controller"]
+
+[[example]]
+name = "dualsense_control"
 required-features = ["sdl-controller"]

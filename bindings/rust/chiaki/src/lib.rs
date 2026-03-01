@@ -29,9 +29,17 @@ pub mod controller;
 pub mod controllermanager;
 pub mod discovery;
 pub mod error;
+#[cfg(feature = "sdl-controller")]
+pub mod feedback;
+#[cfg(feature = "sdl-controller")]
+pub mod haptics;
 pub mod log;
+pub mod mic;
 pub mod regist;
 pub mod session;
+pub mod stats;
+#[cfg(feature = "sdl-controller")]
+pub mod stream;
 pub mod types;
 
 pub use error::{Error, Result};
@@ -59,11 +67,19 @@ pub mod prelude {
         DiscoveryHost, DiscoveryHostState, DiscoveryService, DiscoveryServiceOptions,
     };
     pub use crate::error::{Error, Result};
+    #[cfg(feature = "sdl-controller")]
+    pub use crate::feedback::FeedbackCmd;
+    #[cfg(feature = "sdl-controller")]
+    pub use crate::haptics::HapticsSink;
     pub use crate::log::{Log, LogLevel};
+    pub use crate::mic::MicEncoder;
     pub use crate::regist::{RegisteredHost, RegistInfo, RegistResult, Regist};
     pub use crate::session::{
         AudioHeader, AudioSink, ConnectInfo, Event, Session, VideoFpsPreset,
         VideoProfile, VideoResolutionPreset,
     };
+    pub use crate::stats::StreamStats;
+    #[cfg(feature = "sdl-controller")]
+    pub use crate::stream::{StreamController, StreamControllerConfig, StreamNotification};
     pub use crate::types::{Codec, DualSenseEffectIntensity, QuitReason, Target};
 }
