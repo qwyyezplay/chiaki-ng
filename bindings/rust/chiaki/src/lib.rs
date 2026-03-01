@@ -25,6 +25,8 @@
 //! ```
 
 pub mod controller;
+#[cfg(feature = "sdl-controller")]
+pub mod controllermanager;
 pub mod discovery;
 pub mod error;
 pub mod log;
@@ -51,6 +53,8 @@ pub fn init() -> Result<()> {
 /// Convenience re-exports for the most commonly used types.
 pub mod prelude {
     pub use crate::controller::{ControllerButtons, ControllerState, Touch};
+    #[cfg(feature = "sdl-controller")]
+    pub use crate::controllermanager::{ControllerEvent, ControllerInfo, ControllerManager};
     pub use crate::discovery::{
         DiscoveryHost, DiscoveryHostState, DiscoveryService, DiscoveryServiceOptions,
     };

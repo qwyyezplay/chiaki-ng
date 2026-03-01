@@ -8,6 +8,14 @@ description = "Safe Rust bindings for chiaki-ng"
 chiaki-sys = { path = "../chiaki-sys" }
 thiserror = "2"
 bitflags = "2"
+sdl2 = { version = "0.38", features = ["hidapi"], optional = true }
+
+[features]
+sdl-controller = ["dep:sdl2"]
 
 [dev-dependencies]
 ctrlc = "3"
+
+[[example]]
+name = "controllermanager"
+required-features = ["sdl-controller"]
