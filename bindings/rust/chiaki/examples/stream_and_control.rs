@@ -28,17 +28,14 @@
 //!   --fps 30|60                        Frame rate (default: 60)
 //!   --no-dualsense                     Disable DualSense features
 //!   --output-video <path>              Video output file (default: output.h264 / output.h265)
-//!   --output-audio <path>              Audio output file (default: output.opus.bin)
+//!   --output-audio <path>              Audio output file (default: output.opus)
 //!   --duration <seconds>               Maximum recording duration (default: 30 s)
 //!
 //! The video file can be played back with:
-//!   ffplay -f h264 output.h264
 //!   ffplay -f hevc output.h265
 //!
-//! Audio file format (output.opus.bin):
-//!   Per-frame layout → [4-byte big-endian length][Opus frame data]
-//! Decode with:
-//!   ffprobe -f data output.opus.bin
+//! The audio file can be played back with:
+//!   ffplay output.opus
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -83,48 +80,128 @@ impl VideoFileWriter {
     }
 }
 
-// ── Audio writer ───────────────────────────────────────────────────────────────
+// ── OGG Opus audio writer ─────────────────────────────────────────────────────
 
-/// AudioSink that writes Opus frames to a file in length-prefixed binary format.
+/// Writes Opus frames in standard OGG Opus format (RFC 7845).
 ///
-/// File format: per frame → [4-byte big-endian u32 = frame length][frame data]
-struct OpusFileAudioSink {
+/// The resulting file can be played directly with any media player:
+///   ffplay output.opus
+struct OggOpusWriter {
     writer: BufWriter<File>,
-    label: &'static str,
+    serial: u32,
+    page_seq: u32,
+    granule: u64,
+    frame_size: u32,
     frame_count: Arc<AtomicU64>,
 }
 
-impl OpusFileAudioSink {
-    fn open(path: &str, label: &'static str) -> std::io::Result<(Self, Arc<AtomicU64>)> {
+impl OggOpusWriter {
+    fn open(path: &str) -> std::io::Result<(Self, Arc<AtomicU64>)> {
         let file = File::create(path)?;
         let counter = Arc::new(AtomicU64::new(0));
         Ok((
-            OpusFileAudioSink {
+            OggOpusWriter {
                 writer: BufWriter::with_capacity(64 * 1024, file),
-                label,
+                serial: 0x4368_696B, // "Chik"
+                page_seq: 0,
+                granule: 0,
+                frame_size: 960, // default 20ms @ 48kHz; updated in on_header
                 frame_count: Arc::clone(&counter),
             },
             counter,
         ))
     }
+
+    /// Writes a single OGG page.
+    fn write_page(
+        &mut self,
+        header_type: u8,
+        granule: u64,
+        data: &[u8],
+    ) -> std::io::Result<()> {
+        // Segment table: each segment ≤ 255 bytes.
+        let mut segments: Vec<u8> = Vec::new();
+        let mut remaining = data.len();
+        if remaining == 0 {
+            segments.push(0);
+        } else {
+            while remaining >= 255 {
+                segments.push(255);
+                remaining -= 255;
+            }
+            segments.push(remaining as u8);
+        }
+
+        // Assemble page with CRC zeroed.
+        let mut page = Vec::with_capacity(27 + segments.len() + data.len());
+        page.extend_from_slice(b"OggS");                          // capture pattern
+        page.push(0);                                              // version
+        page.push(header_type);                                    // header type flags
+        page.extend_from_slice(&granule.to_le_bytes());            // granule position
+        page.extend_from_slice(&self.serial.to_le_bytes());        // bitstream serial
+        page.extend_from_slice(&self.page_seq.to_le_bytes());      // page sequence number
+        page.extend_from_slice(&0u32.to_le_bytes());               // CRC placeholder
+        page.push(segments.len() as u8);                           // number of segments
+        page.extend_from_slice(&segments);                         // segment table
+        page.extend_from_slice(data);                              // payload
+
+        // OGG CRC-32 (polynomial 0x04C11DB7, direct, unreflected).
+        let mut crc: u32 = 0;
+        for &b in &page {
+            crc ^= (b as u32) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 {
+                    (crc << 1) ^ 0x04C1_1DB7
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        page[22..26].copy_from_slice(&crc.to_le_bytes());
+
+        self.writer.write_all(&page)?;
+        self.page_seq += 1;
+        Ok(())
+    }
 }
 
-impl AudioSink for OpusFileAudioSink {
+impl AudioSink for OggOpusWriter {
     fn on_header(&mut self, header: AudioHeader) {
         println!(
-            "[{}] audio header: {}ch  {}bit  {}Hz  frame_size={}",
-            self.label, header.channels, header.bits, header.rate, header.frame_size,
+            "[audio] OGG Opus: {}ch  {}bit  {}Hz  frame_size={}",
+            header.channels, header.bits, header.rate, header.frame_size,
         );
+        self.frame_size = header.frame_size;
+
+        // OpusHead (RFC 7845 §5.1)
+        let mut head = Vec::with_capacity(19);
+        head.extend_from_slice(b"OpusHead");
+        head.push(1);                                          // version
+        head.push(header.channels);                            // channel count
+        head.extend_from_slice(&0u16.to_le_bytes());           // pre-skip
+        head.extend_from_slice(&header.rate.to_le_bytes());    // input sample rate
+        head.extend_from_slice(&0i16.to_le_bytes());           // output gain
+        head.push(0);                                          // channel mapping family
+        if let Err(e) = self.write_page(0x02, 0, &head) {
+            eprintln!("[audio] Failed to write OpusHead: {e}");
+        }
+
+        // OpusTags (RFC 7845 §5.2)
+        let vendor = b"chiaki-ng";
+        let mut tags = Vec::new();
+        tags.extend_from_slice(b"OpusTags");
+        tags.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+        tags.extend_from_slice(vendor);
+        tags.extend_from_slice(&0u32.to_le_bytes()); // no user comments
+        if let Err(e) = self.write_page(0x00, 0, &tags) {
+            eprintln!("[audio] Failed to write OpusTags: {e}");
+        }
     }
 
     fn on_frame(&mut self, opus_data: &[u8]) {
-        // Write a 4-byte big-endian length prefix followed by the frame data.
-        let len = opus_data.len() as u32;
-        if self.writer.write_all(&len.to_be_bytes()).is_err()
-            || self.writer.write_all(opus_data).is_err()
-        {
-            eprintln!("[{}] Audio write failed", self.label);
-            return;
+        self.granule += self.frame_size as u64;
+        if let Err(e) = self.write_page(0x00, self.granule, opus_data) {
+            eprintln!("[audio] Write failed: {e}");
         }
         self.frame_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -372,7 +449,7 @@ fn parse_args() -> Args {
                     "  -f, --fps <fps>              30|60 (default: 60)\n",
                     "      --no-dualsense           Disable DualSense features\n",
                     "  -V, --output-video <path>    Video output file\n",
-                    "  -A, --output-audio <path>    Audio output file (length-prefixed Opus frames)\n",
+                    "  -A, --output-audio <path>    Audio output file (OGG Opus, default: output.opus)\n",
                     "  -d, --duration <secs>        Maximum recording duration (default: 30 s)\n",
                 ));
                 std::process::exit(0);
@@ -444,7 +521,7 @@ fn main() {
     //
     // Note: the video callback runs on a C background thread, so the writer is
     // protected by a Mutex.
-    let default_video_path = "output.h264".to_string();
+    let default_video_path = "output.h265".to_string();
     let video_path = args.output_video.unwrap_or(default_video_path);
     let (video_writer, video_frame_count) =
         VideoFileWriter::open(&video_path).expect("Failed to create video output file");
@@ -455,10 +532,10 @@ fn main() {
     let video_writer = Mutex::new(video_writer);
 
     // ── 4. Audio output file ─────────────────────────────────────────────────
-    let default_audio_path = "output.opus.bin".to_string();
+    let default_audio_path = "output.opus".to_string();
     let audio_path = args.output_audio.unwrap_or(default_audio_path);
     let (audio_sink, audio_frame_count) =
-        OpusFileAudioSink::open(&audio_path, "audio").expect("Failed to create audio output file");
+        OggOpusWriter::open(&audio_path).expect("Failed to create audio output file");
     // The haptics channel is not written to a file — just counted.
     let haptics_counter = Arc::new(AtomicU64::new(0));
     let haptics_counter_sink = {
@@ -475,7 +552,8 @@ fn main() {
     };
 
     // ── 5. Video profile ─────────────────────────────────────────────────────
-    let video_profile = VideoProfile::preset(args.resolution, args.fps);
+    let mut video_profile = VideoProfile::preset(args.resolution, args.fps);
+    video_profile.codec = Codec::H265;
     println!(
         "Video profile: {}x{}  {}fps  {:?}  {}kbps",
         video_profile.width, video_profile.height,
@@ -743,7 +821,7 @@ fn main() {
     println!("  Audio file   : {audio_path}");
     println!();
     println!("Playback commands:");
-    println!("  ffplay -f h264 {video_path}    # H.264");
-    println!("  ffplay -f hevc {video_path}    # H.265 (if --no-dualsense may be hevc)");
+    println!("  ffplay -f hevc {video_path}    # H.265 video");
+    println!("  ffplay {audio_path}            # OGG Opus audio");
     println!("---");
 }
