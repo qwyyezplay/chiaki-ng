@@ -93,6 +93,40 @@ impl VideoProfile {
     }
 }
 
+/// Controls which A/V streams the console should send.
+///
+/// Even with audio and video disabled, controller input and DualSense haptics
+/// continue to work normally — only the incoming media streams are suppressed.
+///
+/// Maps to the C `ChiakiDisableAudioVideo` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DisableAudioVideo {
+    /// Both audio and video are enabled (default).
+    #[default]
+    None,
+    /// Suppress the audio stream; video still flows.
+    AudioDisabled,
+    /// Suppress the video stream; audio still flows.
+    VideoDisabled,
+    /// Suppress both audio and video — controller-input-only mode.
+    AudioVideoDisabled,
+}
+
+impl DisableAudioVideo {
+    fn to_raw(self) -> sys::ChiakiDisableAudioVideo {
+        match self {
+            DisableAudioVideo::None =>
+                sys::ChiakiDisableAudioVideo_CHIAKI_NONE_DISABLED,
+            DisableAudioVideo::AudioDisabled =>
+                sys::ChiakiDisableAudioVideo_CHIAKI_AUDIO_DISABLED,
+            DisableAudioVideo::VideoDisabled =>
+                sys::ChiakiDisableAudioVideo_CHIAKI_VIDEO_DISABLED,
+            DisableAudioVideo::AudioVideoDisabled =>
+                sys::ChiakiDisableAudioVideo_CHIAKI_AUDIO_VIDEO_DISABLED,
+        }
+    }
+}
+
 /// Audio stream header conveyed by [`AudioSink::on_header`].
 #[derive(Debug, Clone, Copy)]
 pub struct AudioHeader {
@@ -278,6 +312,7 @@ pub struct ConnectInfo {
     pub(crate) video_profile_auto_downgrade: bool,
     pub(crate) enable_keyboard: bool,
     pub(crate) enable_dualsense: bool,
+    pub(crate) audio_video_disabled: DisableAudioVideo,
     pub(crate) psn_account_id: [u8; 8],
     pub(crate) packet_loss_max: f64,
     pub(crate) enable_idr_on_fec_failure: bool,
@@ -294,6 +329,7 @@ pub struct ConnectInfoBuilder {
     video_profile_auto_downgrade: bool,
     enable_keyboard: bool,
     enable_dualsense: bool,
+    audio_video_disabled: DisableAudioVideo,
     psn_account_id: [u8; 8],
     packet_loss_max: f64,
     enable_idr_on_fec_failure: bool,
@@ -332,6 +368,10 @@ impl ConnectInfoBuilder {
         self.enable_dualsense = v;
         self
     }
+    pub fn audio_video_disabled(mut self, v: DisableAudioVideo) -> Self {
+        self.audio_video_disabled = v;
+        self
+    }
     pub fn psn_account_id(mut self, id: [u8; 8]) -> Self {
         self.psn_account_id = id;
         self
@@ -362,6 +402,7 @@ impl ConnectInfoBuilder {
             video_profile_auto_downgrade: self.video_profile_auto_downgrade,
             enable_keyboard: self.enable_keyboard,
             enable_dualsense: self.enable_dualsense,
+            audio_video_disabled: self.audio_video_disabled,
             psn_account_id: self.psn_account_id,
             packet_loss_max: self.packet_loss_max,
             enable_idr_on_fec_failure: self.enable_idr_on_fec_failure,
@@ -497,7 +538,7 @@ impl Session {
             video_profile_auto_downgrade: connect_info.video_profile_auto_downgrade,
             enable_keyboard: connect_info.enable_keyboard,
             enable_dualsense: connect_info.enable_dualsense,
-            audio_video_disabled: sys::ChiakiDisableAudioVideo_CHIAKI_NONE_DISABLED,
+            audio_video_disabled: connect_info.audio_video_disabled.to_raw(),
             auto_regist: false,
             holepunch_session: ptr::null_mut(),
             rudp_sock: ptr::null_mut(),
@@ -1044,5 +1085,47 @@ mod tests {
         // Empty host becomes an empty CString — valid because it has no null bytes.
         let result = builder.build();
         assert!(result.is_ok());
+    }
+
+    // ── DisableAudioVideo ──────────────────────────────────────────────────────
+
+    #[test]
+    fn disable_audio_video_defaults_to_none() {
+        init();
+        let info = ConnectInfo::builder().host("10.0.0.1").build().unwrap();
+        assert_eq!(info.audio_video_disabled, DisableAudioVideo::None);
+    }
+
+    #[test]
+    fn disable_audio_video_stores_audio_disabled() {
+        init();
+        let info = ConnectInfo::builder()
+            .host("10.0.0.1")
+            .audio_video_disabled(DisableAudioVideo::AudioDisabled)
+            .build()
+            .unwrap();
+        assert_eq!(info.audio_video_disabled, DisableAudioVideo::AudioDisabled);
+    }
+
+    #[test]
+    fn disable_audio_video_stores_video_disabled() {
+        init();
+        let info = ConnectInfo::builder()
+            .host("10.0.0.1")
+            .audio_video_disabled(DisableAudioVideo::VideoDisabled)
+            .build()
+            .unwrap();
+        assert_eq!(info.audio_video_disabled, DisableAudioVideo::VideoDisabled);
+    }
+
+    #[test]
+    fn disable_audio_video_stores_audio_video_disabled() {
+        init();
+        let info = ConnectInfo::builder()
+            .host("10.0.0.1")
+            .audio_video_disabled(DisableAudioVideo::AudioVideoDisabled)
+            .build()
+            .unwrap();
+        assert_eq!(info.audio_video_disabled, DisableAudioVideo::AudioVideoDisabled);
     }
 }

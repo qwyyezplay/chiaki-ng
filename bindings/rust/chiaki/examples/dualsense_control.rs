@@ -48,6 +48,8 @@
 //!   --resolution 360|540|720|1080 Video resolution (default: 720)
 //!   --fps 30|60                   Frame rate (default: 60)
 //!   --no-dualsense                Disable DualSense features
+//!   --no-video                    Disable video stream (no file written)
+//!   --no-audio                    Disable audio stream (no file written)
 //!   --output-video <path>         Video file  (default: output.h264 / .h265)
 //!   --output-audio <path>         Audio file  (default: output.opus)
 //!   --duration <secs>             Auto-stop after N seconds (default: run until Ctrl-C)
@@ -240,6 +242,8 @@ struct Args {
     resolution: VideoResolutionPreset,
     fps: VideoFpsPreset,
     enable_dualsense: bool,
+    no_video: bool,
+    no_audio: bool,
     output_video: Option<String>,
     output_audio: Option<String>,
     duration: Option<Duration>,
@@ -283,6 +287,8 @@ fn parse_args() -> Args {
     let mut resolution = VideoResolutionPreset::P720;
     let mut fps = VideoFpsPreset::Fps60;
     let mut enable_dualsense = true;
+    let mut no_video = false;
+    let mut no_audio = false;
     let mut output_video: Option<String> = None;
     let mut output_audio: Option<String> = None;
     let mut duration: Option<Duration> = None;
@@ -341,6 +347,12 @@ fn parse_args() -> Args {
             "--no-dualsense" => {
                 enable_dualsense = false;
             }
+            "--no-video" => {
+                no_video = true;
+            }
+            "--no-audio" => {
+                no_audio = true;
+            }
             "--output-video" | "-V" => {
                 output_video = iter.next();
             }
@@ -376,6 +388,8 @@ fn parse_args() -> Args {
                     "  -r, --resolution <res>       360|540|720|1080 (default: 720)\n",
                     "  -f, --fps <fps>              30|60 (default: 60)\n",
                     "      --no-dualsense           Disable DualSense features\n",
+                    "      --no-video               Disable video stream (no file written)\n",
+                    "      --no-audio               Disable audio stream (no file written)\n",
                     "  -V, --output-video <path>    Video output file\n",
                     "  -A, --output-audio <path>    Audio output file (OGG Opus, default: output.opus)\n",
                     "  -d, --duration <secs>        Auto-stop after N seconds\n",
@@ -408,6 +422,8 @@ fn parse_args() -> Args {
         resolution,
         fps,
         enable_dualsense,
+        no_video,
+        no_audio,
         output_video,
         output_audio,
         duration,
@@ -487,14 +503,48 @@ fn main() {
 
     // ── 4. Video output file ──────────────────────────────────────────────────
     let video_path = args.output_video.unwrap_or_else(|| "output.h265".to_string());
-    let (video_writer, video_frame_count, video_byte_count) =
-        VideoFileWriter::open(&video_path).expect("Failed to create video output file");
-    let video_writer = Mutex::new(video_writer);
+    let video_frame_count: Arc<AtomicU64>;
+    let video_byte_count: Arc<AtomicU64>;
+    let video_callback: Option<Box<dyn Fn(&[u8], i32, bool) -> bool + Send + 'static>>;
+
+    if args.no_video {
+        video_frame_count = Arc::new(AtomicU64::new(0));
+        video_byte_count  = Arc::new(AtomicU64::new(0));
+        video_callback    = None;
+    } else {
+        let (writer, frames, bytes) =
+            VideoFileWriter::open(&video_path).expect("Failed to create video output file");
+        let writer = Mutex::new(writer);
+        video_frame_count = frames;
+        video_byte_count  = bytes;
+        video_callback = Some(Box::new(move |frame: &[u8], frames_lost: i32, frame_recovered: bool| {
+            let mut w = writer.lock().unwrap();
+            let ok = w.write_frame(frame);
+            if frames_lost > 0 {
+                println!(
+                    "[video] #{n}  lost={frames_lost}  recovered={frame_recovered}  {}B",
+                    frame.len(),
+                    n = w.frame_count.load(Ordering::Relaxed),
+                );
+            }
+            ok
+        }));
+    }
 
     // ── 5. Audio output file ──────────────────────────────────────────────────
     let audio_path = args.output_audio.unwrap_or_else(|| "output.opus".to_string());
-    let (audio_sink, audio_frame_count) =
-        OggOpusWriter::open(&audio_path).expect("Failed to create audio output file");
+    let audio_frame_count: Arc<AtomicU64>;
+    let audio_sink_opt: Option<Box<dyn AudioSink>>;
+
+    if args.no_audio {
+        audio_frame_count = Arc::new(AtomicU64::new(0));
+        audio_sink_opt    = None;
+    } else {
+        let (sink, counter) =
+            OggOpusWriter::open(&audio_path).expect("Failed to create audio output file");
+        audio_frame_count = counter;
+        audio_sink_opt    = Some(Box::new(sink));
+    }
 
     // ── 6. Video profile ──────────────────────────────────────────────────────
     let mut video_profile = VideoProfile::preset(args.resolution, args.fps);
@@ -507,6 +557,12 @@ fn main() {
     );
 
     // ── 7. ConnectInfo ────────────────────────────────────────────────────────
+    let disable_av = match (args.no_video, args.no_audio) {
+        (true,  true)  => DisableAudioVideo::AudioVideoDisabled,
+        (true,  false) => DisableAudioVideo::VideoDisabled,
+        (false, true)  => DisableAudioVideo::AudioDisabled,
+        (false, false) => DisableAudioVideo::None,
+    };
     let connect_info = ConnectInfo::builder()
         .host(args.host.clone())
         .ps5(args.ps5)
@@ -517,6 +573,7 @@ fn main() {
         .video_profile_auto_downgrade(true)
         .enable_keyboard(true)
         .enable_dualsense(args.enable_dualsense)
+        .audio_video_disabled(disable_av)
         .packet_loss_max(0.05)
         .enable_idr_on_fec_failure(true)
         .build()
@@ -526,19 +583,8 @@ fn main() {
     let config = StreamControllerConfig {
         connect_info,
         enable_dualsense: args.enable_dualsense,
-        video_callback: Some(Box::new(move |frame, frames_lost, frame_recovered| {
-            let mut w = video_writer.lock().unwrap();
-            let ok = w.write_frame(frame);
-            if frames_lost > 0 {
-                println!(
-                    "[video] #{n}  lost={frames_lost}  recovered={frame_recovered}  {}B",
-                    frame.len(),
-                    n = w.frame_count.load(Ordering::Relaxed),
-                );
-            }
-            ok
-        })),
-        audio_sink: Some(Box::new(audio_sink)),
+        video_callback,
+        audio_sink: audio_sink_opt,
         event_callback: Some(Box::new(|event| {
             match event {
                 Event::Connected => {
@@ -636,10 +682,27 @@ fn main() {
         args.fps,
         args.enable_dualsense,
     );
+    println!(
+        "[session] Stream mode: {}",
+        match disable_av {
+            DisableAudioVideo::None                => "audio+video (normal)",
+            DisableAudioVideo::AudioDisabled       => "video only (audio disabled)",
+            DisableAudioVideo::VideoDisabled       => "audio only (video disabled)",
+            DisableAudioVideo::AudioVideoDisabled  => "controller only (audio+video disabled)",
+        }
+    );
     ctrl.start().expect("Failed to start session");
     println!("[session] Started.  Duration: {duration_str}");
-    println!("[output]  Video: {video_path}");
-    println!("[output]  Audio: {audio_path}");
+    if args.no_video {
+        println!("[output]  Video: disabled");
+    } else {
+        println!("[output]  Video: {video_path}");
+    }
+    if args.no_audio {
+        println!("[output]  Audio: disabled");
+    } else {
+        println!("[output]  Audio: {audio_path}");
+    }
 
     // ── 11. Ctrl-C handler ────────────────────────────────────────────────────
     let ctrlc_flag = Arc::new(AtomicBool::new(false));
@@ -854,17 +917,31 @@ fn main() {
         }
     );
     println!("  Duration     : {:.1}s", session_duration.as_secs_f64());
-    println!(
-        "  Video frames : {} ({} KB)",
-        video_frame_count.load(Ordering::Relaxed),
-        video_byte_count.load(Ordering::Relaxed) / 1024,
-    );
-    println!("  Audio frames : {}", audio_frame_count.load(Ordering::Relaxed));
-    println!("  Video file   : {video_path}");
-    println!("  Audio file   : {audio_path}");
+    if args.no_video {
+        println!("  Video frames : disabled");
+    } else {
+        println!(
+            "  Video frames : {} ({} KB)",
+            video_frame_count.load(Ordering::Relaxed),
+            video_byte_count.load(Ordering::Relaxed) / 1024,
+        );
+        println!("  Video file   : {video_path}");
+    }
+    if args.no_audio {
+        println!("  Audio frames : disabled");
+    } else {
+        println!("  Audio frames : {}", audio_frame_count.load(Ordering::Relaxed));
+        println!("  Audio file   : {audio_path}");
+    }
     println!();
-    println!("Playback commands:");
-    println!("  ffplay -f hevc {video_path}   # H.265 video");
-    println!("  ffplay {audio_path}           # OGG Opus audio");
+    if !args.no_video || !args.no_audio {
+        println!("Playback commands:");
+        if !args.no_video {
+            println!("  ffplay -f hevc {video_path}   # H.265 video");
+        }
+        if !args.no_audio {
+            println!("  ffplay {audio_path}           # OGG Opus audio");
+        }
+    }
     println!("---");
 }

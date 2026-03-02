@@ -77,7 +77,7 @@ pub mod prelude {
     pub use crate::mic::MicEncoder;
     pub use crate::regist::{RegisteredHost, RegistInfo, RegistResult, Regist};
     pub use crate::session::{
-        AudioHeader, AudioSink, ConnectInfo, Event, Session, VideoFpsPreset,
+        AudioHeader, AudioSink, ConnectInfo, DisableAudioVideo, Event, Session, VideoFpsPreset,
         VideoProfile, VideoResolutionPreset,
     };
     pub use crate::stats::StreamStats;
