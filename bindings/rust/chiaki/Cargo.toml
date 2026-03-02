@@ -9,9 +9,13 @@ chiaki-sys = { path = "../chiaki-sys" }
 thiserror = "2"
 bitflags = "2"
 sdl2 = { version = "0.38", features = ["hidapi"], optional = true }
+reqwest = { version = "0.13", features = ["blocking", "json"], optional = true }
+serde_json = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
 
 [features]
 sdl-controller = ["dep:sdl2"]
+psn-auth = ["dep:reqwest", "dep:serde_json", "dep:base64"]
 
 [dev-dependencies]
 chiaki-sys = { path = "../chiaki-sys" }
@@ -24,3 +28,7 @@ required-features = ["sdl-controller"]
 [[example]]
 name = "dualsense_control"
 required-features = ["sdl-controller"]
+
+[[example]]
+name = "psn_auth"
+required-features = ["psn-auth"]

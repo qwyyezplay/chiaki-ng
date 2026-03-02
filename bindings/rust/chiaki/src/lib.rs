@@ -35,6 +35,8 @@ pub mod feedback;
 pub mod haptics;
 pub mod log;
 pub mod mic;
+#[cfg(feature = "psn-auth")]
+pub mod psn_auth;
 pub mod regist;
 pub mod session;
 pub mod stats;
@@ -82,4 +84,6 @@ pub mod prelude {
     #[cfg(feature = "sdl-controller")]
     pub use crate::stream::{StreamController, StreamControllerConfig, StreamNotification};
     pub use crate::types::{Codec, DualSenseEffectIntensity, QuitReason, Target};
+    #[cfg(feature = "psn-auth")]
+    pub use crate::psn_auth::{PsnAccountId, PsnAuthError, PsnToken, PsnTokenResponse};
 }
