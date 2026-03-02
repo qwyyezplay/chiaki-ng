@@ -16,6 +16,33 @@ fn main() {
         .unwrap() // repo root
         .to_path_buf();
 
+    // Emit explicit rerun-if-changed directives so Cargo only re-runs this
+    // build script when the C library sources actually change.  Without these,
+    // any file inside the package directory (or, when CargoCallbacks is used,
+    // all transitively-included headers — including generated OUT_DIR files)
+    // can trigger an unnecessary full cmake + bindgen rebuild on every
+    // `cargo check` invocation.
+    println!("cargo:rerun-if-changed=build.rs");
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_root.join("lib").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_root.join("CMakeLists.txt").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_root.join("third-party/CMakeLists.txt").display()
+    );
+    // Track the third-party submodules that CMake compiles into static libs.
+    for sub in &["jerasure", "gf-complete", "nanopb", "curl"] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            repo_root.join("third-party").join(sub).display()
+        );
+    }
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     // Build chiaki-lib using cmake
@@ -188,7 +215,16 @@ fn main() {
     }
 
     bindings
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        // Disable CargoCallbacks' per-header rerun-if-changed tracking.
+        // We already emit explicit directory-level rerun-if-changed directives
+        // at the top of this script (lib/, third-party/ submodules, CMakeLists
+        // files), which gives us precise control.  Leaving CargoCallbacks'
+        // header tracking enabled would additionally track every transitively-
+        // included system header (e.g. /usr/include/stddef.h).  If any of those
+        // are updated (package manager, OS upgrade) it would spuriously re-run
+        // the entire cmake + bindgen pipeline even though chiaki's own sources
+        // haven't changed.
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new().rerun_on_header_files(false)))
         .generate()
         .expect("Unable to generate bindings")
         .write_to_file(out_dir.join("bindings.rs"))
@@ -211,7 +247,15 @@ fn generate_wrapper_h(chiaki_include_dir: &PathBuf, out_dir: &PathBuf) -> PathBu
     }
 
     let dest = out_dir.join("wrapper.h");
-    fs::write(&dest, content).expect("failed to write generated wrapper.h");
+    // Only write if content has changed so we don't update the mtime on every
+    // build.  If Cargo (or bindgen's CargoCallbacks) tracks this file via
+    // rerun-if-changed, an unconditional write would cause an infinite rebuild
+    // loop: build.rs runs → wrapper.h mtime updated → next cargo check sees
+    // wrapper.h changed → build.rs runs again.
+    let existing = fs::read_to_string(&dest).unwrap_or_default();
+    if existing != content {
+        fs::write(&dest, content).expect("failed to write generated wrapper.h");
+    }
     dest
 }
 
