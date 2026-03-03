@@ -51,7 +51,9 @@ fn main() {
     cfg.define("CHIAKI_ENABLE_GUI", "OFF")
         .define("CHIAKI_ENABLE_CLI", "OFF")
         .define("CHIAKI_ENABLE_TESTS", "OFF")
-        .define("CHIAKI_ENABLE_STEAMDECK_NATIVE", "OFF");
+        .define("CHIAKI_ENABLE_STEAMDECK_NATIVE", "OFF")
+        .define("CHIAKI_ENABLE_FFMPEG_DECODER", "OFF")
+        .define("CHIAKI_ENABLE_STEAM_SHORTCUT", "OFF");
 
     let profile = env::var("PROFILE").unwrap();
 
@@ -272,6 +274,11 @@ fn collect_headers(base: &PathBuf, dir: &PathBuf, out: &mut Vec<String>) {
             if file_name == "pidecoder.h" {
                 // Excluded: depends on <ilclient.h> (Raspberry Pi VideoCore OpenMAX IL),
                 // which is only available on Raspberry Pi hardware and not cross-platform.
+                continue;
+            }
+            if file_name == "ffmpegdecoder.h" {
+                // Excluded: CHIAKI_ENABLE_FFMPEG_DECODER is OFF; FFmpeg headers
+                // are not required for the Rust bindings build.
                 continue;
             }
             // Relative path from the `chiaki/` dir (e.g. "audio.h" or "remote/holepunch.h")
