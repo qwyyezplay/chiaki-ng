@@ -7,7 +7,6 @@ use std::ptr;
 use std::sync::Arc;
 
 use chiaki_sys as sys;
-use chiaki_sys::libc;
 
 use crate::error::{ffi_result, Result};
 use crate::log::Log;
@@ -130,15 +129,21 @@ fn ipaddr_to_sockaddr_storage(addr: IpAddr) -> sys::sockaddr_storage {
     match addr {
         IpAddr::V4(v4) => unsafe {
             let sin =
-                &mut storage as *mut sys::sockaddr_storage as *mut libc::sockaddr_in;
-            (*sin).sin_family = libc::AF_INET as _;
-            (*sin).sin_addr.s_addr = u32::from_be_bytes(v4.octets());
+                &mut storage as *mut sys::sockaddr_storage as *mut sys::sockaddr_in;
+            (*sin).sin_family = sys::AF_INET as _;
+            #[cfg(not(windows))]
+            { (*sin).sin_addr.s_addr = u32::from_be_bytes(v4.octets()); }
+            #[cfg(windows)]
+            { (*sin).sin_addr.S_un.S_addr = u32::from_be_bytes(v4.octets()); }
         },
         IpAddr::V6(v6) => unsafe {
             let sin6 =
-                &mut storage as *mut sys::sockaddr_storage as *mut libc::sockaddr_in6;
-            (*sin6).sin6_family = libc::AF_INET6 as _;
-            (*sin6).sin6_addr.s6_addr = v6.octets();
+                &mut storage as *mut sys::sockaddr_storage as *mut sys::sockaddr_in6;
+            (*sin6).sin6_family = sys::AF_INET6 as _;
+            #[cfg(not(windows))]
+            { (*sin6).sin6_addr.s6_addr = v6.octets(); }
+            #[cfg(windows)]
+            { (*sin6).sin6_addr.u.Byte = v6.octets(); }
         },
     }
     storage
@@ -204,8 +209,8 @@ impl DiscoveryService {
         // not sockaddr_storage.  On macOS (and POSIX in general) sendto(2)
         // returns EINVAL if addrlen is larger than the real structure.
         let send_addr_size = match options.send_addr {
-            IpAddr::V4(_) => std::mem::size_of::<libc::sockaddr_in>(),
-            IpAddr::V6(_) => std::mem::size_of::<libc::sockaddr_in6>(),
+            IpAddr::V4(_) => std::mem::size_of::<sys::sockaddr_in>(),
+            IpAddr::V6(_) => std::mem::size_of::<sys::sockaddr_in6>(),
         };
 
         // Build the broadcast_addrs array (C will malloc+memcpy).

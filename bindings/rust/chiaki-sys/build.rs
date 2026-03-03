@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     // Navigate: bindings/rust/chiaki-sys → bindings/rust → bindings → repo root
@@ -53,7 +54,16 @@ fn main() {
         .define("CHIAKI_ENABLE_TESTS", "OFF")
         .define("CHIAKI_ENABLE_STEAMDECK_NATIVE", "OFF")
         .define("CHIAKI_ENABLE_FFMPEG_DECODER", "OFF")
-        .define("CHIAKI_ENABLE_STEAM_SHORTCUT", "OFF");
+        .define("CHIAKI_ENABLE_STEAM_SHORTCUT", "OFF")
+        // Disable optional curl features that require extra system libraries not
+        // needed by chiaki's PSN/holepunch usage.
+        .define("CURL_USE_LIBPSL", "OFF")
+        .define("CURL_USE_LIBIDN2", "OFF")
+        .define("USE_NGHTTP2", "OFF");
+
+    if target_os == "windows" && target_env == "gnu" {
+        cfg.generator("Ninja");
+    }
 
     let profile = env::var("PROFILE").unwrap();
 
@@ -176,6 +186,27 @@ fn main() {
         println!("cargo:rustc-link-lib=crypto");
     }
 
+    // opus — used by chiaki's audio encoder (opusencoder.c).
+    let opus_via_pkg_config = pkg_config::probe_library("opus").is_ok();
+    if !opus_via_pkg_config {
+        println!("cargo:rustc-link-lib=opus");
+    }
+
+    // libidn2 — IDN support in the bundled curl (linked when cmake detects it).
+    let idn2_via_pkg_config = pkg_config::probe_library("libidn2").is_ok();
+    if !idn2_via_pkg_config {
+        println!("cargo:rustc-link-lib=idn2");
+    }
+
+    // Windows system libraries required by curl (Schannel TLS, BCrypt RNG)
+    // and chiaki's holepunch (IP adapter enumeration).
+    if target_os == "windows" {
+        println!("cargo:rustc-link-lib=crypt32");   // Cert*/CryptQueryObject/CryptDecodeObjectEx
+        println!("cargo:rustc-link-lib=advapi32");   // CryptAcquireContextA/CryptCreateHash etc.
+        println!("cargo:rustc-link-lib=bcrypt");     // BCryptGenRandom
+        println!("cargo:rustc-link-lib=iphlpapi");   // GetAdaptersInfo
+    }
+
     // Generate Rust bindings using bindgen
     let chiaki_include_dir = repo_root.join("lib/include");
 
@@ -183,18 +214,9 @@ fn main() {
 
     // Platform-specific includes
     match target_os.as_str() {
-        "windows" => {
-            // vcpkg installed include: VCPKG_INSTALLED_DIR/<triplet>/include
-            if let Ok(vcpkg_dir) = env::var("VCPKG_INSTALLED_DIR") {
-                let triplet =
-                    env::var("VCPKG_DEFAULT_TRIPLET").unwrap_or_else(|_| "x64-windows".to_string());
-                extra_includes.push(PathBuf::from(&vcpkg_dir).join(&triplet).join("include"));
-            }
-            // FFmpeg and other pre-built deps extracted to deps/ at repo root
-            let deps_include = repo_root.join("deps").join("include");
-            if deps_include.exists() {
-                extra_includes.push(deps_include);
-            }
+        "windows" if target_env == "gnu" => {
+            // MSYS2/MinGW-w64: packages install headers to /mingw64/include
+            extra_includes.push(PathBuf::from("/mingw64/include"));
         }
         "linux" => {
             extra_includes.push(PathBuf::from("/usr/local/include"));

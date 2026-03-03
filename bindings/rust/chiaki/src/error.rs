@@ -80,7 +80,7 @@ impl From<sys::ChiakiErrorCode> for Error {
             sys::ChiakiErrorCode_CHIAKI_ERR_FEC_FAILED => Error::FecFailed,
             sys::ChiakiErrorCode_CHIAKI_ERR_VERSION_MISMATCH => Error::VersionMismatch,
             sys::ChiakiErrorCode_CHIAKI_ERR_HTTP_NONOK => Error::HttpNonOk,
-            other => Error::UnrecognizedCode(other),
+            other => Error::UnrecognizedCode(other as u32),
         }
     }
 }

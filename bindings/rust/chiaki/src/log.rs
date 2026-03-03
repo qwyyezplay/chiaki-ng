@@ -46,7 +46,7 @@ unsafe extern "C" fn log_callback_trampoline(
     user: *mut c_void,
 ) { unsafe {
     let closure = &*(user as *const LogClosure);
-    let rust_level = LogLevel::from_bits_truncate(level);
+    let rust_level = LogLevel::from_bits_truncate(level as u32);
     let msg_str = if msg.is_null() {
         ""
     } else {
