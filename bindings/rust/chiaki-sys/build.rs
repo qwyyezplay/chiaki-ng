@@ -93,7 +93,8 @@ fn main() {
     println!("cargo:rustc-link-lib=static=gf_complete");
 
     // nanopb (protobuf) — built by CMake under third-party/nanopb/.
-    // CMake appends "d" to the lib name in debug builds.
+    // nanopb's CMakeLists sets CMAKE_DEBUG_POSTFIX="d" unconditionally on all
+    // platforms, so debug builds produce libprotobuf-nanopbd.a everywhere.
     let build_nanopb_dir = dst.join("build/third-party/nanopb");
     println!(
         "cargo:rustc-link-search=native={}",
@@ -107,7 +108,8 @@ fn main() {
     println!("cargo:rustc-link-lib=static={}", nanopb_lib);
 
     // curl — built by CMake under third-party/curl/lib/ with WebSocket support.
-    // CMake appends "d" to the lib name in debug builds.
+    // curl's CMakeLists sets CMAKE_DEBUG_POSTFIX="-d" unconditionally on all
+    // platforms, so debug builds produce libcurl-d.a everywhere.
     let build_curl_dir = dst.join("build/third-party/curl/lib");
     println!(
         "cargo:rustc-link-search=native={}",
@@ -120,28 +122,66 @@ fn main() {
     };
     println!("cargo:rustc-link-lib=static={}", curl_lib);
 
-    // json-c and miniupnpc — system libraries used by holepunch.c.
-    // On macOS CoreServices provides _Gestalt used in takion.c.
-    let json_via_pkg_config = pkg_config::probe_library("json-c").is_ok();
-    if !json_via_pkg_config {
+    // ------------------------------------------------------------------
+    // System library search paths
+    // ------------------------------------------------------------------
+    // Emit platform-specific search paths once here, covering all system
+    // libraries below (json-c, miniupnpc, ssh2, openssl, opus).  Centralising
+    // them avoids duplicated directives and ensures every pkg_config fallback
+    // can locate its files regardless of which probes succeed or fail.
+    //
+    // Override: set CHIAKI_SYS_LIB_DIRS to a colon-separated (Unix) or
+    // semicolon-separated (Windows) list of directories; when set, only those
+    // paths are added and the built-in defaults are skipped entirely.
+    println!("cargo:rerun-if-env-changed=CHIAKI_SYS_LIB_DIRS");
+    if let Ok(extra_dirs) = env::var("CHIAKI_SYS_LIB_DIRS") {
+        let sep = if target_os == "windows" { ';' } else { ':' };
+        for dir in extra_dirs.split(sep).filter(|d| !d.is_empty()) {
+            println!("cargo:rustc-link-search=native={}", dir);
+        }
+    } else {
+        let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
         match target_os.as_str() {
             "macos" => {
+                // Apple Silicon Homebrew (covers openssl@3, json-c, opus, …)
                 println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
+                println!("cargo:rustc-link-search=native=/opt/homebrew/opt/openssl@3/lib");
+                // Intel Homebrew
                 println!("cargo:rustc-link-search=native=/usr/local/lib");
+                println!("cargo:rustc-link-search=native=/usr/local/opt/openssl@3/lib");
             }
             "linux" => {
                 println!("cargo:rustc-link-search=native=/usr/local/lib");
                 println!("cargo:rustc-link-search=native=/usr/lib");
+                // Debian/Ubuntu multi-arch paths — missed by the /usr/lib fallback alone.
+                let multiarch = match target_arch.as_str() {
+                    "x86_64"  => Some("x86_64-linux-gnu"),
+                    "aarch64" => Some("aarch64-linux-gnu"),
+                    "arm"     => Some("arm-linux-gnueabihf"),
+                    _         => None,
+                };
+                if let Some(triple) = multiarch {
+                    println!("cargo:rustc-link-search=native=/usr/lib/{}", triple);
+                    println!("cargo:rustc-link-search=native=/usr/local/lib/{}", triple);
+                }
+            }
+            "windows" if target_env == "gnu" => {
+                println!("cargo:rustc-link-search=native=/mingw64/lib");
             }
             _ => {}
         }
-        println!("cargo:rustc-link-lib=json-c");
+    }
+
+    // json-c and miniupnpc — system libraries used by holepunch.c.
+    // On macOS CoreServices provides _Gestalt used in takion.c.
+    let json_via_pkg_config = pkg_config::probe_library("json-c").is_ok();
+    if !json_via_pkg_config {
+        println!("cargo:rustc-link-lib=dylib=json-c");
     }
 
     let miniupnpc_via_pkg_config = pkg_config::probe_library("miniupnpc").is_ok();
     if !miniupnpc_via_pkg_config {
-        // Search paths already added above for macOS/linux.
-        println!("cargo:rustc-link-lib=miniupnpc");
+        println!("cargo:rustc-link-lib=dylib=miniupnpc");
     }
 
     if target_os == "macos" {
@@ -153,49 +193,41 @@ fn main() {
 
     // zlib — used by curl's content_encoding.c for gzip/deflate decompression.
     // Available as a system library on macOS and most Linux distributions.
-    println!("cargo:rustc-link-lib=z");
+    println!("cargo:rustc-link-lib=dylib=z");
 
     // libssh2 — curl was built with SSH support; link the system library.
     let ssh2_via_pkg_config = pkg_config::probe_library("libssh2").is_ok();
     if !ssh2_via_pkg_config {
-        // Search paths for json-c / miniupnpc above already cover /opt/homebrew/lib.
-        println!("cargo:rustc-link-lib=ssh2");
+        println!("cargo:rustc-link-lib=dylib=ssh2");
     }
 
     // OpenSSL — both libssl (TLS handshake) and libcrypto (RNG, digest, cipher).
-    // curl's bundled OpenSSL backend requires libssl in addition to libcrypto.
-    // Probe the combined "openssl" pkg-config package so both are linked together.
+    // curl's bundled OpenSSL backend requires both libssl and libcrypto.
+    //
+    // Search order:
+    //   1. pkg-config (covers standard and Homebrew installs)
+    //   2. OPENSSL_LIB_DIR env var — explicit path to the directory with libssl/libcrypto
+    //   3. OPENSSL_DIR env var    — root of an OpenSSL install; <OPENSSL_DIR>/lib is used
+    //   4. Fall back to the platform search paths emitted by the block above
+    println!("cargo:rerun-if-env-changed=OPENSSL_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=OPENSSL_DIR");
     let openssl_via_pkg_config = pkg_config::probe_library("openssl").is_ok();
     if !openssl_via_pkg_config {
-        match target_os.as_str() {
-            "macos" => {
-                // Apple Silicon Homebrew path
-                println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
-                println!("cargo:rustc-link-search=native=/opt/homebrew/opt/openssl@3/lib");
-                // Intel Homebrew path
-                println!("cargo:rustc-link-search=native=/usr/local/lib");
-                println!("cargo:rustc-link-search=native=/usr/local/opt/openssl@3/lib");
-            }
-            "linux" => {
-                println!("cargo:rustc-link-search=native=/usr/local/lib");
-                println!("cargo:rustc-link-search=native=/usr/lib");
-            }
-            _ => {}
+        if let Ok(lib_dir) = env::var("OPENSSL_LIB_DIR") {
+            println!("cargo:rustc-link-search=native={}", lib_dir);
+        } else if let Ok(dir) = env::var("OPENSSL_DIR") {
+            println!("cargo:rustc-link-search=native={}/lib", dir);
         }
-        println!("cargo:rustc-link-lib=ssl");
-        println!("cargo:rustc-link-lib=crypto");
+        // If neither env var is set, rely on the platform paths already emitted
+        // by the CHIAKI_SYS_LIB_DIRS block above (e.g. /opt/homebrew/opt/openssl@3/lib).
+        println!("cargo:rustc-link-lib=dylib=ssl");
+        println!("cargo:rustc-link-lib=dylib=crypto");
     }
 
     // opus — used by chiaki's audio encoder (opusencoder.c).
     let opus_via_pkg_config = pkg_config::probe_library("opus").is_ok();
     if !opus_via_pkg_config {
-        println!("cargo:rustc-link-lib=opus");
-    }
-
-    // libidn2 — IDN support in the bundled curl (linked when cmake detects it).
-    let idn2_via_pkg_config = pkg_config::probe_library("libidn2").is_ok();
-    if !idn2_via_pkg_config {
-        println!("cargo:rustc-link-lib=idn2");
+        println!("cargo:rustc-link-lib=dylib=opus");
     }
 
     // Windows system libraries required by curl (Schannel TLS, BCrypt RNG)
