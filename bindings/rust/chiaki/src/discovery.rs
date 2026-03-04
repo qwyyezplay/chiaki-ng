@@ -140,10 +140,14 @@ fn ipaddr_to_sockaddr_storage(addr: IpAddr) -> sys::sockaddr_storage {
             let sin6 =
                 &mut storage as *mut sys::sockaddr_storage as *mut sys::sockaddr_in6;
             (*sin6).sin6_family = sys::AF_INET6 as _;
-            #[cfg(not(windows))]
-            { (*sin6).sin6_addr.s6_addr = v6.octets(); }
             #[cfg(windows)]
             { (*sin6).sin6_addr.u.Byte = v6.octets(); }
+            // macOS/BSD: s6_addr is a C macro aliased to __u6_addr.__u6_addr8;
+            // bindgen exposes the underlying union field directly.
+            #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
+            { (*sin6).sin6_addr.__u6_addr.__u6_addr8 = v6.octets(); }
+            #[cfg(not(any(windows, target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd")))]
+            { (*sin6).sin6_addr.s6_addr = v6.octets(); }
         },
     }
     storage
