@@ -58,7 +58,7 @@ fn main() {
         // Disable optional curl features that require extra system libraries not
         // needed by chiaki's PSN/holepunch usage.
         .define("CURL_USE_LIBPSL", "OFF")
-        .define("CURL_USE_LIBIDN2", "OFF")
+        .define("USE_LIBIDN2", "OFF")
         .define("USE_NGHTTP2", "OFF");
 
     if target_os == "windows" && target_env == "gnu" {
